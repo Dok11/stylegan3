@@ -21,6 +21,8 @@ def run_augment_check(image_in, image_out):
         lumaflip=0,
         hue=0,
         saturation=0,
+        offset_x=1,
+        offset_y=0,
     )
 
     image = Image.open(image_in)

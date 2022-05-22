@@ -11,14 +11,18 @@
 Matches the original implementation by Karras et al. at
 https://github.com/NVlabs/stylegan2-ada/blob/main/training/augment.py"""
 
+import random
+
 import numpy as np
 import scipy.signal
 import torch
-from torch_utils import persistence
+
 from torch_utils import misc
-from torch_utils.ops import upfirdn2d
-from torch_utils.ops import grid_sample_gradfix
+from torch_utils import persistence
 from torch_utils.ops import conv2d_gradfix
+from torch_utils.ops import grid_sample_gradfix
+from torch_utils.ops import upfirdn2d
+
 
 #----------------------------------------------------------------------------
 # Coefficients of various wavelet decomposition low-pass filters.
@@ -61,6 +65,30 @@ def translate2d(tx, ty, **kwargs):
         [0, 1, ty],
         [0, 0, 1],
         **kwargs)
+
+def offset2d(images: torch.Tensor, offset_x: torch.Tensor, offset_y: torch.Tensor):
+    images_result: list[torch.Tensor] = []
+
+    count, _channels, height, width = images.shape
+
+    for image_index in range(count):
+        img: torch.Tensor = images[image_index]
+
+        max_x = int(width * offset_x[image_index])
+        max_y = int(height * offset_y[image_index])
+
+        value_h = random.randint(0, max_x) * 2 - max_x
+        value_v = random.randint(0, max_y) * 2 - max_y
+
+        if abs(value_h) > 0:
+            img = torch.roll(img, value_h, 2)
+
+        if abs(value_v) > 0:
+            img = torch.roll(img, value_v, 1)
+
+        images_result.append(img)
+
+    return torch.stack(images_result)
 
 def translate3d(tx, ty, tz, **kwargs):
     return matrix(
@@ -126,6 +154,7 @@ class AugmentPipe(torch.nn.Module):
         brightness=0, contrast=0, lumaflip=0, hue=0, saturation=0, brightness_std=0.2, contrast_std=0.5, hue_max=1, saturation_std=1,
         imgfilter=0, imgfilter_bands=[1,1,1,1], imgfilter_std=1,
         noise=0, cutout=0, noise_std=0.1, cutout_size=0.5,
+        offset_x=0, offset_y=0,
     ):
         super().__init__()
         self.register_buffer('p', torch.ones([]))       # Overall multiplier for augmentation probability.
@@ -135,6 +164,8 @@ class AugmentPipe(torch.nn.Module):
         self.rotate90         = float(rotate90)         # Probability multiplier for 90 degree rotations.
         self.xint             = float(xint)             # Probability multiplier for integer translation.
         self.xint_max         = float(xint_max)         # Range of integer translation, relative to image dimensions.
+        self.offset_x         = float(offset_x)         # Range of integer offset by x, relative to image dimensions.
+        self.offset_y         = float(offset_y)         # Range of integer offset by y, relative to image dimensions.
 
         # General geometric transformations.
         self.scale            = float(scale)            # Probability multiplier for isotropic scaling.
@@ -221,6 +252,13 @@ class AugmentPipe(torch.nn.Module):
             if debug_percentile is not None:
                 t = torch.full_like(t, (debug_percentile * 2 - 1) * self.xint_max)
             G_inv = G_inv @ translate2d_inv(torch.round(t[:,0] * width), torch.round(t[:,1] * height))
+
+        # Apply integer offset with probability (offset * strength).
+        if self.offset_x > 0 or self.offset_y > 0:
+            offset_x = torch.rand(batch_size, device=device) * self.offset_x
+            offset_y = torch.rand(batch_size, device=device) * self.offset_y
+
+            images = offset2d(images, offset_x, offset_y)
 
         # --------------------------------------------------------
         # Select parameters for general geometric transformations.
